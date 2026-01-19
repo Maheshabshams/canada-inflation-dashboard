@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -7,10 +8,21 @@ import plotly.express as px
 
 APP_DIR = Path(__file__).parent
 
+# Detect Streamlit Cloud
+ON_STREAMLIT_CLOUD = os.getenv("STREAMLIT_RUNTIME_ENV") is not None
+
 # Prefer LIVE data if it exists, otherwise fall back to sample
 LIVE_PATH = APP_DIR / "data" / "live_canada_macro.csv"
 SAMPLE_PATH = APP_DIR / "data" / "sample_canada_macro.csv"
 DATA_PATH = LIVE_PATH if LIVE_PATH.exists() else SAMPLE_PATH
+
+# Friendly labels (you can add more later)
+LABELS = {
+    "cpi_yoy": "Inflation (YoY %)",
+    "policy_rate": "BoC Policy Rate (%)",
+    "unemployment": "Unemployment Rate (%)",
+    "wage_growth": "Wage Growth (YoY %)",
+}
 
 st.set_page_config(page_title="Project 1 — Canada Inflation App", layout="wide")
 
@@ -39,13 +51,17 @@ if not numeric_cols:
 
 # --- Sidebar controls ---
 st.sidebar.header("Controls")
-target = st.sidebar.selectbox("Choose indicator", numeric_cols, index=0)
+
+# Use friendly names in the dropdown, but keep the real column name internally
+friendly_options = {LABELS.get(c, c): c for c in numeric_cols}
+target_label = st.sidebar.selectbox("Choose indicator", list(friendly_options.keys()), index=0)
+target = friendly_options[target_label]
 
 # --- Layout ---
 left, right = st.columns([2, 1], gap="large")
 
 with left:
-    st.subheader(f"{target} over time")
+    st.subheader(f"{target_label} over time")
 
     # Simple rolling forecast (trend)
     df["trend_3m"] = df[target].rolling(window=3).mean()
@@ -54,8 +70,8 @@ with left:
         df,
         x="date",
         y=[target, "trend_3m"],
-        labels={"value": target, "variable": "Series"},
-        title=f"{target}: actual vs trend",
+        labels={"value": target_label, "variable": "Series"},
+        title=f"{target_label}: actual vs trend",
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Trend = 3-month rolling average (baseline forecast)")
@@ -93,11 +109,7 @@ st.metric("Naive MAE", f"{naive_mae:.3f}")
 st.caption("This is a simple baseline backtest (not full research-grade evaluation).")
 
 st.divider()
-st.header("Forecast (R ARIMA)")
-
-st.write("This runs **auto.arima()** in R and shows a 12-month forecast + 95% interval.")
-
-run_r = st.button("Run ARIMA forecast (R)")
+st.header("Forecast (ARIMA)")
 
 OUT_DIR = APP_DIR / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
@@ -108,15 +120,24 @@ df[["date", target]].assign(date=df["date"].dt.strftime("%Y-%m-%d")).to_csv(inpu
 out_csv = OUT_DIR / f"arima_{target}.csv"
 r_script = APP_DIR / "r" / "arima_forecast.R"
 
-if run_r:
-    try:
-        cmd = ["Rscript", str(r_script), str(input_csv), "date", str(target), str(out_csv)]
-        subprocess.check_call(cmd)
-        st.success("ARIMA forecast created.")
-    except FileNotFoundError:
-        st.error("Rscript not found. Install R and make sure `Rscript` is in PATH.")
-    except subprocess.CalledProcessError as e:
-        st.error(f"R script failed: {e}")
+if ON_STREAMLIT_CLOUD:
+    st.info(
+        "ARIMA (R) is disabled on Streamlit Community Cloud (Rscript is usually not available).\n\n"
+        "Run ARIMA locally, then commit/upload the generated CSV to `outputs/` so it appears here."
+    )
+else:
+    st.write("This runs **auto.arima()** in R and shows a 12-month forecast + 95% interval.")
+    run_r = st.button("Run ARIMA forecast (R)")
+
+    if run_r:
+        try:
+            cmd = ["Rscript", str(r_script), str(input_csv), "date", str(target), str(out_csv)]
+            subprocess.check_call(cmd)
+            st.success("ARIMA forecast created.")
+        except FileNotFoundError:
+            st.error("Rscript not found. Install R and make sure `Rscript` is in PATH.")
+        except subprocess.CalledProcessError as e:
+            st.error(f"R script failed: {e}")
 
 if out_csv.exists():
     fc = pd.read_csv(out_csv)
@@ -137,9 +158,9 @@ if out_csv.exists():
         }
     )
 
-    st.subheader(f"{target}: Actual vs ARIMA forecast (R)")
+    st.subheader(f"{target_label}: Actual vs ARIMA forecast")
 
-    fig2 = px.line(title=f"{target}: Actual vs ARIMA Forecast")
+    fig2 = px.line(title=f"{target_label}: Actual vs ARIMA Forecast")
     fig2.add_scatter(x=df["date"], y=df[target], mode="lines", name="Actual")
     fig2.add_scatter(x=fc_plot["date"], y=fc_plot["forecast"], mode="lines", name="ARIMA forecast")
     fig2.add_scatter(x=fc_plot["date"], y=fc_plot["hi95"], mode="lines", name="95% upper", opacity=0.25)
@@ -151,7 +172,7 @@ if out_csv.exists():
     with open(out_csv, "rb") as f:
         st.download_button("Download ARIMA forecast CSV", f, file_name=out_csv.name)
 else:
-    st.info("Click **Run ARIMA forecast (R)** to generate forecasts.")
+    st.info("No ARIMA forecast file yet. (On Cloud, run locally and upload the CSV.)")
 
 st.divider()
 st.header("Forecast (Neural Net)")
@@ -164,9 +185,9 @@ if nn_path.exists():
     nn = pd.read_csv(nn_path)
     nn["date"] = pd.to_datetime(nn["date"])
 
-    st.subheader(f"{target}: Actual vs ARIMA vs Neural Net")
+    st.subheader(f"{target_label}: Actual vs ARIMA vs Neural Net")
 
-    fig3 = px.line(title=f"{target}: Actual vs ARIMA vs Neural Net")
+    fig3 = px.line(title=f"{target_label}: Actual vs ARIMA vs Neural Net")
     fig3.add_scatter(x=df["date"], y=df[target], mode="lines", name="Actual")
 
     # ARIMA (if exists)
